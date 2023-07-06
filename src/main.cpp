@@ -57,12 +57,16 @@ int mqttPort = 1883;
 
 //Variables globales
 long lastReconnect = 0;
+DynamicJsonDocument mqttDataDoc(2048);
 
 
 //*FUNCIONES 
 void ConectGPRS();
 void verifyGPRS();
 bool reconnect();
+void procesarSensores();
+void sendData();
+void getUbication();
 
 
 
@@ -91,9 +95,56 @@ void setup(){
 void loop(){
 
   verifyGPRS();
+  procesarSensores();
+  delay(1000);
+  sendData();
+
+  // getUbication();
   
 
 }
+
+void getUbication(){
+    if (neogps.available() > 0){
+    gps.encode(neogps.read());
+    if (gps.location.isUpdated()){
+      Serial.print("Latitude= "); 
+      Serial.print(gps.location.lat(), 6);
+      Serial.print(" Longitude= "); 
+      Serial.println(gps.location.lng(), 6);
+    }
+  }
+}
+
+
+//procesar los sensores 
+void procesarSensores() {
+
+int temperatura = random(1,50);
+mqttDataDoc["temp"] = temperatura;
+
+}
+
+
+void sendData(){
+
+  long now = millis();
+  long lastsend = 5000;
+
+  if(now-lastsend >= 0){
+    now = 0;
+    String topic = "a/b/temp";
+
+    String toSend = "";
+    serializeJson(mqttDataDoc,toSend);
+    client.publish(topic.c_str(),toSend.c_str());
+    getUbication();
+    // serializeJsonPretty(mqttDataDoc,Serial);
+
+  }
+
+}
+
 
 /// conectar a la red gsm 
 void ConectGPRS(){
@@ -159,7 +210,7 @@ bool reconnect(){
   String dId = "ESP32GSM";
   String userName = "root";
   String password = "root";
-  String topic = "a/b";
+  String topic = "a/b/#";
 
   if(client.connect(dId.c_str(), userName.c_str(), password.c_str())){
    Serial.println("");
@@ -179,12 +230,9 @@ bool reconnect(){
 //verificar si esta conectado a GPRS - datos 
 void verifyGPRS(){
 
-  // Serial.print("GPRS: ");
- 
-  if(modem.isGprsConnected())
-    Serial.println("Connectado a GPRS");
-  else {
+  if(!modem.isGprsConnected()){
     Serial.println("Desconectado");
+    delay(1000);
     Serial.println("Reconectando...");
      
   if(!modem.waitForNetwork(100000,true)) {
@@ -194,14 +242,15 @@ void verifyGPRS(){
     if(!modem.gprsConnect(apn,gprsUser,gprsPass)) {
         Serial.println("Error al conectar GPRS");
         delay(5000);
+        ESP.restart();
       }
     else {
-      Serial.println("GPRS OK");
+      Serial.println("GPRS Reconectado => OK");
       }
     }
   }
 
-
+  //*Verificar conexión a MQTT
   if(!client.connected()){
   long now = millis();
   if (now - lastReconnect > 5000){
