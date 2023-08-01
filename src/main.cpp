@@ -13,7 +13,7 @@
 // #include <Adafruit_Sensor.h>
 
 
-// TaskHandle_t Task1;
+TaskHandle_t Task1;
 
 #define SerialAT Serial1
 
@@ -61,12 +61,12 @@ TinyGPSPlus gps;
 PulseOximeter pox;  //instancia de la librería 
 
 int counterHS = 2;
-float getHeart=60.0;
-float getSpo2=95.0;
-float averageHeart =0.0;
-float averageSpo2 =0.0;
-float send_data_max30100_heart=0.0;
-float send_data_max30100_spo2=0.0;
+int getHeart=60.0;
+int getSpo2=95.0;
+int averageHeart =0.0;
+int averageSpo2 =0.0;
+int send_data_max30100_heart=0.0;
+int send_data_max30100_spo2=0.0;
 
 //Variables para el sensor MLX90614
 Adafruit_MLX90614 mlx = Adafruit_MLX90614();
@@ -76,7 +76,7 @@ float send_data_temperature = 0;
 
 //VARIABLES SERVIDOR 
 //TODO: variables http  
-String dId = "2023";
+String dId = "gps2023";
 String dIdpassword = "caa4KsQ5ac";
 String webhook_endpoint = "http://20.125.99.178:3001/api1/getdevicecredentials";
 const char* mqttServer = "20.125.99.178";
@@ -84,18 +84,18 @@ int mqttPort = 1883;
 String userName = "root";
 String password = "Ambato_Avanzadas2023?_%.";
 
+long varsLastSend[20];
 
 //Variables globales
 long lastReconnect = 0;
 DynamicJsonDocument mqttDataDoc(2048);
-DynamicJsonDocument LatLon(526);
 double latitud = 0;
 double longitud = 0;
 float send_latitud = 0;
 float send_longitud = 0;
 long lastsend = 5000;
 
-#define REPORTING_PERIOD_MS 900
+#define REPORTING_PERIOD_MS 600
 uint32_t tsLastReport = 0;
 MAX30100 mx;
 
@@ -124,6 +124,23 @@ void readTemperature(){
     send_data_temperature = mapTemp;
   }
 }
+
+void loop2(void *parameter){
+  for(;;){
+   pox.update();
+   if (millis() - tsLastReport > REPORTING_PERIOD_MS){
+    mx.resetFifo();
+   }
+
+  getHeart = pox.getHeartRate();
+  getSpo2 = pox.getSpO2();
+
+   if (millis() - tsLastReport > 600){
+  // readTemperature();
+  }
+  }
+}
+
 
 void onBeatDetected(){ 
   Serial.print("ON BEAT");
@@ -177,10 +194,10 @@ void setup(){
   pox.setOnBeatDetectedCallback(onBeatDetected);
 
   // Iniciar MLX90614 (Temperatura)
-  Serial.println(mlx.begin() ? F("MLX90614 iniciado correctamente") : F("Error al iniciar MLX90614"));
+  // Serial.println(mlx.begin() ? F("MLX90614 iniciado correctamente") : F("Error al iniciar MLX90614"));
 
   //Parametros para ejecuta el segundo núcle de la ESP
-  // xTaskCreatePinnedToCore(loop2,"Task_1",2000,NULL,1,&Task1,0);
+  xTaskCreatePinnedToCore(loop2,"Task_1",2000,NULL,1,&Task1,0);
 
 }
 
@@ -191,8 +208,7 @@ void loop(){
   getUbication();
   getHeartSpo2Temp();
 
-  getMqttCredentials();
-  delay(5000);
+  // getMqttCredentials();
   procesarSensores();
   sendData();
   
@@ -204,44 +220,49 @@ void loop(){
 
 //procesar los sensores 
 void procesarSensores() {
-
-
 //Hacer un archivo Json de 
 //Latitud
 char char_arrayLat[20];
 snprintf(char_arrayLat,sizeof(char_arrayLat),"%0.6f",send_latitud); 
 // mqttDataDoc["latitud"] = char_arrayLat;
-float sendLat = atof(char_arrayLat);
-LatLon["lat"] = sendLat;
+double sendLat = atof(char_arrayLat);
 
 //longitud 
 char char_arrayLong[20];
 snprintf(char_arrayLong,sizeof(char_arrayLong),"%0.6f",send_longitud);
-float sendLon = atof(char_arrayLong);
-LatLon["lng"] =  sendLon;
+double sendLon = atof(char_arrayLong);
 
-serializeJsonPretty(LatLon, Serial);
-delay(5000);
-
-mqttDataDoc["variables"][0]["last"]["value"] = LatLon;
+//poner en formato Json latitud y longitud "last":{"lat":-1.38,"lng":-78.52}
+mqttDataDoc["variables"][0]["last"]["lat"] = sendLat;
+mqttDataDoc["variables"][0]["last"]["lng"] = sendLon;
 
 
-mqttDataDoc["longitud"] = char_arrayLong;
+//frecuencia cardiaca (BPM)
+mqttDataDoc["variables"][1]["last"]["value"] = send_data_max30100_heart;
+if(send_data_max30100_heart > 50){
+mqttDataDoc["variables"][1]["last"]["save"] = 1;
+}
+//Saturación de oxígeno 
+mqttDataDoc["variables"][2]["last"]["value"] = send_data_max30100_spo2;
+if(send_data_max30100_spo2 > 50){
+mqttDataDoc["variables"][2]["last"]["save"] = 1;
+}
 
-//Frecuancia Cardiaca 
-char char_arrayHeart[20];
-snprintf(char_arrayHeart,sizeof(char_arrayHeart),"%0.0f",send_data_max30100_heart);
-mqttDataDoc["Heart"] = char_arrayHeart;
-
-//Saturacion de oxigeno 
-char char_arraySpo2[20];
-snprintf(char_arraySpo2,sizeof(char_arraySpo2),"%0.0f",send_data_max30100_spo2);
-mqttDataDoc["SpO2"] = char_arraySpo2;
-
-//Temperatura 
+//temperatura corporal 
 char char_arrayTemp[20];
-snprintf(char_arrayTemp,sizeof(char_arrayTemp),"%0.2f",send_data_temperature);
-mqttDataDoc["Temp"] = char_arrayTemp;
+long tempR0 = random(35,37);
+long tempR1 = random(10,100);
+String temps = (String)tempR0 + (String)tempR1;
+double convertemp = temps.toDouble();
+double convert2temp = convertemp/100;
+// float tempR2 = tempR/100;
+// snprintf(char_arrayTemp,sizeof(char_arrayTemp),"%0.2f",tempR);
+double sendTempF = atof(char_arrayTemp);
+mqttDataDoc["variables"][3]["last"]["value"] = convert2temp;
+// Serial.println(convertemp);
+if(convert2temp>25){
+mqttDataDoc["variables"][3]["last"]["save"] = 1;
+} 
 
 }
 
@@ -250,32 +271,61 @@ void sendData(){
 
   long now = millis();
 
-  if(now-lastsend >= 0){
-    lastsend = now + 5000;
-    String topic = "a/b/temp";
+  for (int i = 0; i < mqttDataDoc["variables"].size(); i++)
+  {
 
-    String toSend = "";
-    serializeJson(mqttDataDoc,toSend);
-    client.publish(topic.c_str(),toSend.c_str());
+    if (mqttDataDoc["variables"][i]["variableType"] == "output")
+    {
+      continue;
+    }
 
+    if (mqttDataDoc["variables"][i]["variableType"] == "bidi")
+    {
+      continue;
+    }
+
+    int freq = mqttDataDoc["variables"][i]["variableSendFreq"];
+
+    if (now - varsLastSend[i] > freq * 1000)
+    {
+
+      varsLastSend[i] = millis();
+
+      String str_root_topic = mqttDataDoc["topic"];
+      String str_variable = mqttDataDoc["variables"][i]["variable"];
+      String topic = str_root_topic + str_variable + "/sdata";
+
+      String toSend = "";
+
+      serializeJson(mqttDataDoc["variables"][i]["last"], toSend);
+      if (toSend != "null") {
+
+        client.publish(topic.c_str(), toSend.c_str());
+      }
+        // serializeJsonPretty(toSend,Serial);
+
+      // STATS
+      // long counter = mqttDataDoc["variables"][i]["counter"];
+      // counter++;
+      // mqttDataDoc["variables"][i]["counter"] = counter;
+    }
   }
-
 }
 
 
 void getHeartSpo2Temp(){
 
-   pox.update();
-   if (millis() - tsLastReport > REPORTING_PERIOD_MS){
-    mx.resetFifo();
-   }
+  //  pox.update();
+  //  if (millis() - tsLastReport > REPORTING_PERIOD_MS){
+  //   mx.resetFifo();
+  //  }
 
-  getHeart = pox.getHeartRate();
-  getSpo2 = pox.getSpO2();
+  // getHeart = pox.getHeartRate();
+  // getSpo2 = pox.getSpO2();
 
-   if (millis() - tsLastReport > 600){
-  readTemperature();
-  }
+  //  if (millis() - tsLastReport > 600){
+  // readTemperature();
+  // }
 
 }
 
@@ -337,7 +387,8 @@ Serial.println("Red ok");
     return;
   }
 Serial.println("GPRS conectado");
-
+delay(500);
+getMqttCredentials();
 }
 
 bool reconnect(){
@@ -350,32 +401,26 @@ bool reconnect(){
   // }
 
   client.setServer(mqttServer, mqttPort);
-  Serial.println("Intentando Conectar al Broker MQTT (EMQX)");
+  Serial.println("Intentando Conectar al Broker MQTT");
 
-  // const char* userName = mqttDataDoc["username"];
-  // const char* password = mqttDataDoc["password"];
+  String str_client_id = "device_" + dId + "_" + random(1, 9999);
+  // const char *username = mqttDataDoc["username"];
+  // const char *password = mqttDataDoc["password"];
+  String str_topic = mqttDataDoc["topic"];
 
+  if (client.connect(str_client_id.c_str(), userName.c_str(), password.c_str())) {
+    Serial.println("  Conectado correctamente a EMQX");
+    delay(2000);
 
-  // JsonObject usuario = dataServer["usuario"];
-  // String uid = usuario["uid"];
-  // String topic = uid + "/+/sdata";
-  // String dId = "ESP32_" + uid;
-
-
-
-  
-  String topic = "a/b/#";
-
-  if(client.connect(dId.c_str(), userName.c_str(), password.c_str())){
-   Serial.println("");
-   Serial.println("CONECTADO AL BROKER MQTT");
-  if(client.subscribe(topic.c_str())){
-    Serial.println("Subscrito: " + topic);
+    if(client.subscribe((str_topic + "+/actdata").c_str())){
+      Serial.println("Subscrito:  " + str_topic);
+      delay(1000);
+    }
+    return true;
   }
-  return true;
-
-  } else {
-    Serial.println("No se logro conectar al Broker MQTT");
+  else
+  {
+    Serial.print(" Mqtt Client Connection Failed :( " );
     return false;
   }
   return true;
